@@ -82,8 +82,27 @@ class StoreShopifySettings(Schema):
     api_secret: str = ""
 
 
+class StoreWooCommerceSettings(Schema):
+    store_url: str = ""
+    consumer_key: str = ""
+    consumer_secret: str = ""
+    webhook_secret: str = ""
+    sync_orders: bool = True
+    status_mapping: dict[str, str] = {}
+
+
+class StoreWebhookSettings(Schema):
+    secret: str = ""
+    enable_hmac: bool = True
+    max_retries: int = 3
+    backoff_factor: float = 1.5
+    timeout: float = 10.0
+
+
 class StorePluginSettings(Schema):
     shopify: StoreShopifySettings = StoreShopifySettings()
+    woocommerce: StoreWooCommerceSettings = StoreWooCommerceSettings()
+    webhook: StoreWebhookSettings = StoreWebhookSettings()
 
 
 class BaseStore(MetadataInput):

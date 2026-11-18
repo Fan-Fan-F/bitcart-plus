@@ -1,92 +1,144 @@
-# Bitcart
+# Bitcart Plus (bitcart-plus)
 
-![Github All Contributors](https://img.shields.io/github/all-contributors/bitcart/bitcart?style=flat-square)
-[![CI](https://github.com/bitcart/bitcart/actions/workflows/ci.yml/badge.svg)](https://github.com/bitcart/bitcart/actions/workflows/ci.yml)
-![Codecov](https://img.shields.io/codecov/c/github/bitcart/bitcart?style=flat-square)
-[![Python versions](https://img.shields.io/pypi/pyversions/bitcart?style=flat-square)](https://docs.bitcart.ai)
+> 高可用、带电商扩展与可靠 Webhook 回调引擎的自托管加密货币支付处理器。  
+> High-availability, self-hosted cryptocurrency payment processor with robust webhook callback engine and e-commerce integrations.
 
-Bitcart is a platform for merchants, users and developers which offers easy setup and use.
+---
 
-## Linked repositories
+## 简体中文
 
-Our ecosystem consists of a few packages, this is our central repository.
+### 项目介绍
+**Bitcart Plus** 是基于知名自托管加密货币支付网关 Bitcart 进行二次开发（A 路线）的增强版本。针对跨境电商独立站与多商户场景的实际需求，本项目重点强化了支付状态回调（IPN / Webhook）的交付可靠性（支持指数退避重试与失败快速拦截）、数字防伪装与防重放机制（HMAC-SHA256 签名与时间戳校验）、商户端幂等防抖，并补齐了 WooCommerce 与 Shopify 等主流电商平台的标准化对接插件与状态映射适配器。
 
-It is recommended to propose feature requests to Bitcart ecosystem as a whole on that repository.
+### 功能与改进点
+本项目在原项目基础上实现了 4 项实质性改进（详见 [CHANGES.md](CHANGES.md)）：
 
-Full list of our repositories:
+1. **支付状态回调（IPN / Webhook）高可用重试与交付引擎** (`api/services/ipn_sender.py`)：
+   - 彻底解决原项目单次 HTTP 调用易因网络抖动、商户端重启导致漏单卡单的问题；
+   - 支持商户级与全局最大重试次数（默认 3 次）、退避因子（默认 1.5）与指数退避（Exponential Backoff）；
+   - 智能识别 429 限流与 5xx 服务端错误自动重试；对不可重试的 4xx 客户端错误快速失败；
+   - 引入 `IPNDeliveryResult`，详尽记录每次回调的全局交付追踪 ID（`delivery_id`）、尝试次数、HTTP 状态码及耗时。
+2. **Webhook 安全签名防伪装与防重放机制** (`api/services/ipn_sender.py`, `api/ext/ecommerce.py`)：
+   - 支持配置 Webhook 密钥（`secret`）与 HMAC-SHA256 签名计算；
+   - 回调请求头中注入 `X-Bitcart-Signature-256`（格式 `t=<timestamp>,v1=<signature>`）、`X-Bitcart-Timestamp` 与 `X-Bitcart-Delivery-Id`；
+   - 提供开箱即用的商户端验签工具 `verify_ipn_signature`，通过时序安全比较（`hmac.compare_digest`）与容差时间窗口防御仿冒请求与重放攻击。
+3. **主流电商平台对接插件与状态适配器** (`api/schemas/stores.py`, `api/ext/ecommerce.py`)：
+   - 在 `StorePluginSettings` 中新增 `StoreWooCommerceSettings` 与 `StoreWebhookSettings` 结构化配置模型；
+   - 提供 `WooCommerceAdapter`：支持 Bitcart 账单状态（`pending`、`paid`、`confirmed`、`complete`、`invalid`、`expired` 等）到 WooCommerce 订单状态的标准双向映射、订单备注格式化与标准化 Webhook 报文生成；
+   - 提供 `ShopifyAdapter`：支持 Shopify 财务状态映射与交易报文构造。
+4. **支付回调幂等性防抖与重复通知抑制** (`api/services/ipn_sender.py`)：
+   - 引入内存状态指纹 `(target_url, object_id, status)` 缓存；
+   - 在设定的防抖窗口内（默认 15s）抑制重复状态的高频重推，避免下游商户系统并发错乱或重复扣减库存；
+   - 请求头注入全局事件唯一标识 `X-Bitcart-Event-Id`，方便商户端实现幂等消费。
 
-https://github.com/bitcart/bitcart - Bitcart Core Daemons and Merchants API
+### 快速开始
 
-https://github.com/bitcart/bitcart-admin - The admin panel of Bitcart
+#### 1. 环境要求
+- Python >= 3.12
+- 依赖项管理器：`pip` 或 `uv`
+- 外部基础服务（完整运行时）：PostgreSQL、Redis、对应币种全节点/Electrum 守护进程
 
-https://github.com/bitcart/bitcart-store - Bitcart ready store
+#### 2. 安装与配置
+克隆仓库并安装 Python 依赖：
+```bash
+git clone https://github.com/Fan-Fan-F/bitcart-plus.git
+cd bitcart-plus
 
-https://github.com/bitcart/bitcart-docker - Docker packaging, base for all deployment methods
+# 创建虚拟环境
+python3 -m venv .venv
+source .venv/bin/activate
 
-https://github.com/bitcart/bitcart-sdk - Python library for coins connection
+# 安装核心依赖
+pip install -e .
+# 或使用 pyproject.toml 声明依赖
+pip install "fastapi>=0.115.0" "pydantic>=2.10.3" "aiohttp<4.0" "sqlalchemy>=2.0.36" "dishka>=1.4.2"
+```
 
-https://github.com/bitcart/bitccl - The BitCCL scripting language for checkout flow automation
+配置环境变量（或创建 `.env` 文件）：
+```bash
+BITCART_ADMIN_USER=admin@example.com
+BITCART_ADMIN_PASS=changeme
+BITCART_DB_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/bitcart
+BITCART_REDIS_URL=redis://localhost:6379/0
+```
 
-https://github.com/bitcart/bitcart-docs - [Bitcart documentation](https://docs.bitcart.ai)
+#### 3. 运行服务与自测
+```bash
+# 启动 API 服务
+uvicorn main:app --host 0.0.0.0 --port 8000
 
-https://github.com/bitcart/bitcart-site - [Bitcart official site](https://bitcart.ai)
+# 运行代码规范检查
+ruff check api/schemas/stores.py api/services/ipn_sender.py api/ext/ecommerce.py tests/test_ecommerce_and_ipn.py
 
-## Docs
+# 运行电商与回调增强模块自测
+pytest -o addopts="" -o filterwarnings="default" -o asyncio_default_fixture_loop_scope="function" --noconftest tests/test_ecommerce_and_ipn.py
+```
 
-Docs are available at https://docs.bitcart.ai or in our [docs repository](https://github.com/bitcart/bitcart-docs)
+### 来源与致谢
+本项目基于 [bitcart](https://github.com/bitcart/bitcart) 二次开发，原项目由 bitcart 以 MIT 许可证开源。
 
-## Contributing
+### 许可证
+本项目沿用原项目的开源许可证，采用 MIT 许可证。完整授权声明请参阅根目录 [LICENSE](LICENSE) 文件。
 
-See [our contributing guidelines](https://github.com/bitcart/bitcart/blob/master/CONTRIBUTING.md) for details.
+---
 
-## Contributors ✨
+## English
 
-Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/docs/en/emoji-key)):
+### Overview
+**Bitcart Plus** is an enhanced fork (Route A secondary development) of [Bitcart](https://github.com/bitcart/bitcart), the popular self-hosted cryptocurrency payment processor. Designed to meet the stringent reliability requirements of e-commerce independent stores and multi-merchant platforms, this project enhances payment status callback (IPN / Webhook) reliability with exponential backoff retries, cryptographic anti-tampering (HMAC-SHA256 signatures and timestamp verification), idempotency debouncing, and plug-and-play adapters for mainstream e-commerce platforms such as WooCommerce and Shopify.
 
-<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
-<!-- prettier-ignore-start -->
-<!-- markdownlint-disable -->
-<table>
-  <tbody>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/MrNaif2018"><img src="https://avatars3.githubusercontent.com/u/39452697?v=4?s=100" width="100px;" alt="MrNaif2018"/><br /><sub><b>MrNaif2018</b></sub></a><br /><a href="#maintenance-MrNaif2018" title="Maintenance">🚧</a> <a href="https://github.com/bitcart/bitcart/commits?author=MrNaif2018" title="Code">💻</a> <a href="https://github.com/bitcart/bitcart/commits?author=MrNaif2018" title="Documentation">📖</a> <a href="#design-MrNaif2018" title="Design">🎨</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/tomasmor42"><img src="https://avatars2.githubusercontent.com/u/42064734?v=4?s=100" width="100px;" alt="tomasmor42"/><br /><sub><b>tomasmor42</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=tomasmor42" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/yagicandegirmenci"><img src="https://avatars3.githubusercontent.com/u/62724709?v=4?s=100" width="100px;" alt="Yağız Değirmenci"/><br /><sub><b>Yağız Değirmenci</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=yagicandegirmenci" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/xiaoxianma"><img src="https://avatars0.githubusercontent.com/u/3086064?v=4?s=100" width="100px;" alt="Weidong Sun"/><br /><sub><b>Weidong Sun</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=xiaoxianma" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/kartecianos"><img src="https://avatars2.githubusercontent.com/u/43797783?v=4?s=100" width="100px;" alt="kartecianos"/><br /><sub><b>kartecianos</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=kartecianos" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/arynn-gupta"><img src="https://avatars0.githubusercontent.com/u/61794851?v=4?s=100" width="100px;" alt="CYBORG"/><br /><sub><b>CYBORG</b></sub></a><br /><a href="#design-arynn-gupta" title="Design">🎨</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/SakshamSingh-v2"><img src="https://avatars1.githubusercontent.com/u/55451173?v=4?s=100" width="100px;" alt="Saksham Singh"/><br /><sub><b>Saksham Singh</b></sub></a><br /><a href="#design-SakshamSingh-v2" title="Design">🎨</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/orestischaral"><img src="https://avatars1.githubusercontent.com/u/33599092?v=4?s=100" width="100px;" alt="Orestis Charalampakos"/><br /><sub><b>Orestis Charalampakos</b></sub></a><br /><a href="#design-orestischaral" title="Design">🎨</a> <a href="https://github.com/bitcart/bitcart/commits?author=orestischaral" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="http://tobyase.de/"><img src="https://avatars0.githubusercontent.com/u/6002167?v=4?s=100" width="100px;" alt="TobyAsE"/><br /><sub><b>TobyAsE</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=TobyAsE" title="Code">💻</a> <a href="#design-TobyAsE" title="Design">🎨</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Shadman-Ahmed-Chowdhury"><img src="https://avatars3.githubusercontent.com/u/46925021?v=4?s=100" width="100px;" alt="Shadman Ahmed"/><br /><sub><b>Shadman Ahmed</b></sub></a><br /><a href="#design-Shadman-Ahmed-Chowdhury" title="Design">🎨</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/KarolTrzeszczkowski"><img src="https://avatars.githubusercontent.com/u/11697819?v=4?s=100" width="100px;" alt="Karol Trzeszczkowski"/><br /><sub><b>Karol Trzeszczkowski</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=KarolTrzeszczkowski" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/MaximeKoitsalu"><img src="https://avatars.githubusercontent.com/u/8655862?v=4?s=100" width="100px;" alt="Maxime Koitsalu"/><br /><sub><b>Maxime Koitsalu</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=MaximeKoitsalu" title="Code">💻</a> <a href="#design-MaximeKoitsalu" title="Design">🎨</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://git.io/JuT7Z"><img src="https://avatars.githubusercontent.com/u/88304238?v=4?s=100" width="100px;" alt="Shubham-Singh-Rajput"/><br /><sub><b>Shubham-Singh-Rajput</b></sub></a><br /><a href="#translation-shubham-singh-748" title="Translation">🌍</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Xaconi"><img src="https://avatars.githubusercontent.com/u/1944438?v=4?s=100" width="100px;" alt="Nicolás Giacconi"/><br /><sub><b>Nicolás Giacconi</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=Xaconi" title="Code">💻</a> <a href="#design-Xaconi" title="Design">🎨</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/leovoon"><img src="https://avatars.githubusercontent.com/u/16155802?v=4?s=100" width="100px;" alt="leovoon"/><br /><sub><b>leovoon</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=leovoon" title="Code">💻</a> <a href="#design-leovoon" title="Design">🎨</a> <a href="#a11y-leovoon" title="Accessibility">️️️️♿️</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://twitter.com/mustaphanezzari"><img src="https://avatars.githubusercontent.com/u/4595534?v=4?s=100" width="100px;" alt="Mustapha Nezzari"/><br /><sub><b>Mustapha Nezzari</b></sub></a><br /><a href="#translation-MawsFr" title="Translation">🌍</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/surfer190"><img src="https://avatars.githubusercontent.com/u/3285222?v=4?s=100" width="100px;" alt="surfer190"/><br /><sub><b>surfer190</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=surfer190" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/restyler"><img src="https://avatars.githubusercontent.com/u/775507?v=4?s=100" width="100px;" alt="restyler"/><br /><sub><b>restyler</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=restyler" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://www.groestlcoin.org/"><img src="https://avatars.githubusercontent.com/u/11212268?v=4?s=100" width="100px;" alt="gruve-p"/><br /><sub><b>gruve-p</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=gruve-p" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/g00g1"><img src="https://avatars.githubusercontent.com/u/91201021?v=4?s=100" width="100px;" alt="g00g1"/><br /><sub><b>g00g1</b></sub></a><br /><a href="https://github.com/bitcart/bitcart/commits?author=g00g1" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Ravaan21"><img src="https://avatars.githubusercontent.com/u/48627542?v=4?s=100" width="100px;" alt="RAVAAN"/><br /><sub><b>RAVAAN</b></sub></a><br /><a href="#security-Ravaan21" title="Security">🛡️</a></td>
-    </tr>
-  </tbody>
-</table>
+### Key Features & Improvements
+Based on the upstream project, 4 substantive enhancements have been implemented (see [CHANGES.md](CHANGES.md) for details):
 
-<!-- markdownlint-restore -->
-<!-- prettier-ignore-end -->
+1. **High-Availability IPN Delivery Engine with Exponential Backoff** (`api/services/ipn_sender.py`):
+   - Solves missed or lost notifications caused by transient network glitches or merchant server restarts;
+   - Configurable retry count (`max_retries`, default 3), backoff multiplier (`backoff_factor`, default 1.5), and request timeout;
+   - Intelligent status code handling: retries on HTTP 429 rate limits and 5xx server errors; fast-fails on non-retryable 4xx client errors;
+   - Returns structured `IPNDeliveryResult` logging delivery attempts, HTTP status codes, latency in ms, and unique delivery IDs.
+2. **HMAC-SHA256 Webhook Security & Anti-Replay Verification** (`api/services/ipn_sender.py`, `api/ext/ecommerce.py`):
+   - Supports merchant webhook secrets and HMAC-SHA256 signature generation;
+   - Automatically injects `X-Bitcart-Signature-256` (format: `t=<timestamp>,v1=<signature>`), `X-Bitcart-Timestamp`, and `X-Bitcart-Delivery-Id` headers;
+   - Provides ready-to-use merchant verification utilities `verify_ipn_signature` with timing-attack prevention (`hmac.compare_digest`) and configurable timestamp tolerance windows.
+3. **E-Commerce Adapters for WooCommerce and Shopify** (`api/schemas/stores.py`, `api/ext/ecommerce.py`):
+   - Adds `StoreWooCommerceSettings` and `StoreWebhookSettings` schemas to `StorePluginSettings`;
+   - Implements `WooCommerceAdapter` with complete bidirectional status mappings (`pending`, `paid`, `confirmed`, `complete`, `invalid`, `expired`), order note generation, and standardized webhook payloads;
+   - Implements `ShopifyAdapter` for financial status translation and checkout transaction responses.
+4. **Notification Idempotency & Debouncing** (`api/services/ipn_sender.py`):
+   - Implements state fingerprint caching `(target_url, object_id, status)`;
+   - Suppresses duplicate rapid status notifications within a configurable debounce window (default 15s);
+   - Injects global unique `X-Bitcart-Event-Id` for downstream idempotency management.
 
-<!-- ALL-CONTRIBUTORS-LIST:END -->
+### Quick Start
 
-This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification. Contributions of any kind welcome!
+#### Requirements
+- Python >= 3.12
+- Package manager: `pip` or `uv`
+- External services (for full runtime): PostgreSQL, Redis, coin daemons / Electrum nodes
 
-## Copyright and License
+#### Installation
+```bash
+git clone https://github.com/Fan-Fan-F/bitcart-plus.git
+cd bitcart-plus
 
-Copyright (C) 2019 MrNaif2018
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
 
-Licensed under the [MIT license](LICENSE)
+#### Running & Testing
+```bash
+# Start API server
+uvicorn main:app --host 0.0.0.0 --port 8000
+
+# Run linter
+ruff check api/schemas/stores.py api/services/ipn_sender.py api/ext/ecommerce.py tests/test_ecommerce_and_ipn.py
+
+# Run unit tests
+pytest -o addopts="" -o filterwarnings="default" -o asyncio_default_fixture_loop_scope="function" --noconftest tests/test_ecommerce_and_ipn.py
+```
+
+### Source & Acknowledgments
+This project is a secondary development based on [bitcart](https://github.com/bitcart/bitcart), originally developed by [bitcart](https://github.com/bitcart) and open-sourced under the MIT License.
+
+### License
+This project inherits the original open source license and is released under the terms of the MIT License. See [LICENSE](LICENSE) for details.
